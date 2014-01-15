@@ -1,10 +1,10 @@
 ############################################################
-#### IMPORT phpBB to Discourse
+#### IMPORT OSQA to Discourse
 ####
 #### originally created for facebook by Sander Datema (info@sanderdatema.nl)
 #### forked by Claus F. Strasburger ( http://about.me/cfstras )
 ####
-#### version 0.2
+#### version 0.1
 ############################################################
 
 ############################################################
@@ -12,7 +12,7 @@
 ############################################################
 #
 # This rake task will import all posts and comments of a
-# phpBB Forum into Discourse.
+# OSQA Forum into Discourse.
 #
 ############################################################
 #### Prerequisits
@@ -20,33 +20,34 @@
 #
 # - Add this to your Gemfile:
 #   gem 'mysql2', require: false
-# - Edit the configuration file config/import_phpbb.yml
+# - Edit the configuration file config/import_osqa.yml
 
 ############################################################
 #### The Rake Task
 ############################################################
 
 require 'mysql2'
-require 'ruby-bbcode-to-md'
 
-desc "Import posts and comments from a phpBB Forum"
-task "import:phpbb" => 'environment' do
+desc "Import posts and comments from a OSQA Forum"
+task "import:osqa" => 'environment' do
   # Import configuration file
-  @config = YAML.load_file('config/import_phpbb.yml')
+  @config = YAML.load_file('config/import_osqa.yml')
   TEST_MODE = @config['test_mode']
-  DC_ADMIN = @config['discourse_admin']
+  DC_ADMIN = @config['discourse_admin_email']
+  DC_ADMIN = nil
   MARKDOWN_LINEBREAKS = true
+  DEFAULT_CATEGORY_NAME = 'XXXXXX'
 
   if TEST_MODE then puts "\n*** Running in TEST mode. No changes to Discourse database are made\n".yellow end
 
   # Some checks
   # Exit rake task if admin user doesn't exist
   if Discourse.system_user.nil?
-    unless dc_user_exists(DC_ADMIN) then
-      puts "\nERROR: The admin user #{DC_ADMIN} does not exist".red
+    unless dc_user_exists(DC_ADMIN_EMAIL) then
+      puts "\nERROR: The admin user email #{DC_ADMIN_EMAIL} does not exist".red
       exit_script
     else
-      DC_ADMIN = dc_get_user(DC_ADMIN)
+      DC_ADMIN = dc_get_user(DC_ADMIN_EMAIL)
     end
   else
     DC_ADMIN = Discourse.system_user
@@ -119,112 +120,156 @@ end
 
 def sql_fetch_posts(*parse)
   @post_count = @offset = 0
-  @phpbb_posts ||= [] # Initialize
+  @osqa_posts ||= [] # Initialize
 
-  # Fetch Facebook posts in batches and download writer/user info
+  # Fetch OSQA posts in batches and download writer/user info
   loop do
-    query = "SELECT t.topic_id, t.discourse_id, t.topic_title,
-      u.username, u.user_id,
-      f.forum_name,
-      p.post_time, p.post_edit_time,
-      p.post_id,
-      p.discourse_id,
-      p.post_text
-      FROM phpbb_posts p
-      JOIN phpbb_topics t ON t.topic_id=p.topic_id
-      JOIN phpbb_users u ON u.user_id=p.poster_id
-      JOIN phpbb_forums f ON t.forum_id=f.forum_id
-      WHERE p.discourse_id = '0'
-      ORDER BY topic_id ASC, topic_title ASC, post_id ASC
-      LIMIT #{@offset.to_s},500;"
+    query = "SELECT
+		fn.id AS id,
+		fn.title AS title,
+		fn.body AS body,
+		fn.added_at AS added_at,
+		fn.last_activity_at AS last_activity_at,
+		fn.author_id,
+		u.username,
+		u.email,
+		fn.parent_id,
+		fn.tagnames AS tags,
+		fn.node_type AS node_type,
+		fn.discourse_id AS discourse_id
+		FROM forum_node fn
+		JOIN auth_user u ON fn.author_id=u.id
+		WHERE fn.discourse_id='0'
+		ORDER BY node_type DESC,id ASC
+      LIMIT #{@offset.to_s},5000;"
+		
     puts query.yellow if @offset == 0
     result = @sql.query query
     
     count = 0
     # Add the results of this batch to the rest of the imported posts
     result.each do |post|
-      @phpbb_posts << post
+      @osqa_posts << post
       count += 1
     end
     
-    puts "Batch ".green + ((@offset%500) + 1).to_s.green
+    puts "Batch ".green + ((@offset%5000) + 1).to_s.green
     @offset += count
 
     if !TEST_MODE then
       sql_import_posts
-      @phpbb_posts.clear
+      @osqa_posts.clear
     end
 
-    break if count == 0 or count < 500 # No more posts to import
+    break if count == 0 or count < 5000 # No more posts to import
   end
 
-  puts "\nTotal posts: #{@phpbb_posts.count.to_s}".green
+  puts "\nTotal posts: #{@osqa_posts.count.to_s}".green
 end
 
 def sql_fetch_users
-  @phpbb_users ||= [] # Initialize if needed
+  @osqa_users ||= [] # Initialize if needed
 
   offset = 0
   loop do
     count = 0
-    query = "SELECT user_id, username_clean, username,
-      user_email, user_posts, user_inactive_reason, user_lastvisit, group_name
-      FROM phpbb_users u
-      JOIN phpbb_groups g ON g.group_id = u.group_id
-      WHERE g.group_name != 'BOTS'
-      ORDER BY u.user_id ASC
+    query = "SELECT id, username,
+      email, last_login, is_active, is_superuser
+      FROM auth_user u
+      ORDER BY id ASC
       LIMIT #{offset}, 50;"
     puts query.yellow if offset == 0
     users = @sql.query query
     users.each do |user|
-      @phpbb_users << user
+      @osqa_users << user
       count += 1
     end
     offset += count
     break if count == 0
   end
-  puts "Amount of users: #{@phpbb_users.count.to_s}".green
+  puts "Amount of users: #{@osqa_users.count.to_s}".green
 end
 
 def sql_import_posts
-  @phpbb_posts.each do |phpbb_post|
+  @osqa_posts.each do |osqa_post|
     @post_count += 1
 
     # Get details of the writer of this post
-    user = @phpbb_users.find {|k| k['user_id'] == phpbb_post['user_id']}
+    user = @osqa_users.find {|k| k['id'] == osqa_post['author_id']}
     
     if user.nil?
-      puts "Warning: User (#{phpbb_post['user_id']}) {phpbb_post['username']} not found in user list!"
+      puts "Warning: User (#{osqa_post['author_id']}) {osqa_post['username']} not found in user list!"
     end
     
     # Get the Discourse user of this writer
-    dc_user = dc_get_user(phpbb_username_to_dc(user['username_clean']))
-    category = create_category(
-      phpbb_post['forum_name'].downcase, DC_ADMIN)
-    topic_title = sanitize_topic phpbb_post['topic_title']
+    dc_user = dc_get_user(user['email'])
+    
+    # There is no forum_name in osqa, only tags
+    # Here we try to find the first category name matches tags of post
+    # So this require you to create categories in Discourse first
+    category = nil
+    tags = osqa_post['tags'].split(' ').each do |tag| 
+        if (tag != DEFAULT_CATEGORY_NAME) then
+	  category = get_category(tag)
+	  if (!category.nil?) then
+            puts "Got non-default category [#{category.name.to_s}]".red
+            break;
+	  end
+        end
+    end
+
+    if (category.nil?) then
+      category = create_category(DEFAULT_CATEGORY_NAME, DC_ADMIN)
+    end
+
+    topic_title = sanitize_topic osqa_post['title']
     # Remove new lines and replace with a space
     # topic_title = topic_title.gsub( /\n/m, " " )
     
     # if there is a discourse id in the post field then that means it has already been imported.
-    if phpbb_post['discourse_id'] != 0 then
-      puts "[".green + phpbb_post['post_id'].to_s.green + "] skipped, id ".green + phpbb_post['discourse_id'].to_s.green
+    if osqa_post['discourse_id'] != 0 then
+      puts "osqa id [".green + osqa_post['id'].to_s.green + "] skipped, discourse id ".green + osqa_post['discourse_id'].to_s.green
       next
     end
 
     # are we creating a new topic?    
-    topics = @sql.query "SELECT discourse_id
-                          FROM phpbb_topics
-                          WHERE topic_id = #{phpbb_post['topic_id']}"
+    topic = nil
+    is_new_topic = osqa_post['node_type'].to_s == 'question'
 
-    is_new_topic = topics.first['discourse_id'] == 0 || topics.first.nil?
-    
-    text = sanitize_text phpbb_post['post_text']
+    if is_new_topic then
+      topic = osqa_post
+      # puts "We got question as topic #{topic_title} / #{osqa_post['id']}"
+    else
+      if osqa_post['parent_id'].nil? then
+        puts "The osaq answer #{osqa_post['id']} [#{topic_title}] has no parent_id, skip it!".red
+        next
+      end
+      puts "We got answer [#{topic_title}], osqa parent_id:#{osqa_post['parent_id']}"
+      topics = @sql.query "SELECT id, discourse_id, title
+                          FROM forum_node
+                          WHERE id = #{osqa_post['parent_id']}"
+      topic = topics.first
+      puts "Finding the topic osqa id[#{osqa_post['parent_id']}] for post osqa #{osqa_post['id']}"
+      if topic.nil? || topic['discourse_id'] == 0 then
+        puts "Topic ##{osqa_post['parent_id']} not crated before importing posts".red
+	next
+      else
+        real_topic = get_topic(topic['discourse_id'])
+        if (real_topic.nil?) then
+           # Actually I encounter some issues that Topic created before but is gone later, dunno why(no error), So I add one more confirmation here.
+           puts "Topic ##{osqa_post['parent_id']} failed to created, no reason! before importing posts".red
+	   next
+        end
+      end
+    end
+
+    text = sanitize_text osqa_post['body']
     
     # create!
     post_creator = nil
     if is_new_topic
       print "\nCreating topic ".yellow + topic_title +
-        " (#{Time.at(phpbb_post['post_time'])}) in category ".yellow +
+        " (#{Time.at(osqa_post['added_at'])}) in category ".yellow +
         "#{category.name}"
       post_creator = PostCreator.new(
         dc_user,
@@ -233,27 +278,27 @@ def sql_import_posts
         title: sanitize_topic(topic_title),
         archetype: 'regular',
         category: category.name,
-        created_at: Time.at(phpbb_post['post_time']),
-        updated_at: Time.at(phpbb_post['post_edit_time']))
+        created_at: Time.at(osqa_post['added_at']),
+        updated_at: Time.at(osqa_post['last_activity_at']))
 
       # for a new topic: also clear mail deliveries
       ActionMailer::Base.deliveries = []
     else
-      print "using topic #".yellow + topics.first['discourse_id'].to_s.yellow
-      $stdout.flush
+      print "using topic #".yellow + "osqa id:" + topic['id'].to_s.yellow + " discourse id:" + topic['discourse_id'].to_s.yellow + "[" + topic['title'] + "]"
+
       post_creator = PostCreator.new(
         dc_user,
         skip_validations: true,
         raw: text,
-        topic_id: topics.first['discourse_id'],
-        created_at: Time.at(phpbb_post['post_time']),
-        updated_at: Time.at(phpbb_post['post_edit_time']))
+        topic_id: topic['discourse_id'],
+        created_at: Time.at(osqa_post['added_at']),
+        updated_at: Time.at(osqa_post['last_activity_at']))
     end
     post = nil
     begin
       post = post_creator.create
     rescue Exception => e
-      puts "Error #{e} on post #{phpbb_post['post_id']}:\n#{text}"
+      puts "Error #{e} on osqa post #{osqa_post['id']}:\n#{text}"
       puts "--"
       puts e.inspect
       puts e.backtrace
@@ -261,26 +306,18 @@ def sql_import_posts
     end
     # Everything set, save the topic
     if post_creator.errors.present? # Skip if not valid for some reason
-      puts "\nContents of topic from post #{phpbb_post['post_id']} failed to ".red+
+      puts "\nContents of topic from post #{osqa_post['id']} failed to ".red+
                "import: #{post_creator.errors.full_messages}".red
     else
       post_serializer = PostSerializer.new(post, scope: true, root: false)
       post_serializer.topic_slug = post.topic.slug if post.topic.present?
       post_serializer.draft_sequence = DraftSequence.current(dc_user, post.topic.draft_key)
 
-      #save ids to database
-
-      if is_new_topic then
-        discourse_topicid_noted = @sql.query "UPDATE phpbb_topics
-          SET discourse_id = #{post.topic_id}
-          WHERE topic_id = '#{phpbb_post['topic_id']}'" 
-      end
-
-      discourse_postid_noted = @sql.query "UPDATE phpbb_posts
+      discourse_postid_noted = @sql.query "UPDATE forum_node
         SET discourse_id = #{post.id}
-        WHERE post_id = '#{phpbb_post['post_id']}'"
+        WHERE id = '#{osqa_post['id']}'"
 
-      puts "\nTopic #{phpbb_post['post_id']} created".green if is_new_topic
+      puts "\nTopic #{osqa_post['id']} created".green if is_new_topic
     end
 
     puts "\n[".green + @post_count.to_s.green + "] added".green
@@ -291,52 +328,63 @@ end
 
 # Returns the Discourse category where imported posts will go
 def create_category(name, owner)
-  if Category.where('name = ?', name).empty? then
+  if Category.where('lower(name) = ?', name.downcase).empty? then
     puts "\nCreating category '#{name}'".yellow
     Category.create!(name: name, user_id: owner.id)
   else
     # puts "Category '#{name}'".yellow
-    Category.where('name = ?', name).first
+    Category.where('lower(name) = ?', name.downcase).first
   end
 end
 
-# Create a Discourse user with Facebook info unless it already exists
+def get_category(name)
+  Category.where('lower(name) = ?', name.downcase).first
+end
+
+def get_topic(id)
+  Topic.where('id = ?', id).first
+end
+
+# Create a Discourse user with OSQA info unless it already exists
 def create_users
-  @phpbb_users.each do |phpbb_user|
+  @osqa_users.each do |osqa_user|
     # Setup Discourse username
-    dc_username = phpbb_username_to_dc(phpbb_user['username_clean'])
+    dc_username = osqa_username_to_dc(osqa_user['username'])
     
-    dc_email = phpbb_user['user_email']
+    dc_email = osqa_user['email']
     # Create email address for user
     if dc_email.nil? or dc_email.empty? then
       dc_email = dc_username + "@has.no.email"
     end
 
-    approved = phpbb_user['user_inactive_reason'] == 0
+    approved = osqa_user['is_active'] == 1
     approved_by_id =  if approved
                         DC_ADMIN.id
                       else
                         nil
                       end
 
-    admin = if phpbb_user['group_name'] == 'ADMINISTRATORS'
-            true
-              else
-            false
-              end
+    # Just set every user w/o admin privileges
+    admin = false
+#    If you want the admin in osqa is also the admin in discourse, use following code
+#    admin = if osqa_user['is_superuser'] == 1
+#            true
+#              else
+#            false
+#              end
 
     # Create user if it doesn't exist
-    if User.where('username = ?', dc_username).empty? then
+    if User.where('email = ?', dc_email).empty? then
 
       begin
         dc_user = User.create!(username: dc_username,
-                               name: phpbb_user['username'],
+                               name: osqa_user['username'],
                                email: dc_email,
-                               active: phpbb_user['user_posts'] > 0,
+                               active: false,
                                approved: approved,
                                approved_by_id: approved_by_id,
                                admin: admin,
-                               last_seen_at: Time.at(phpbb_user['user_lastvisit']))
+                               last_seen_at: Time.at(osqa_user['last_login']))
       rescue Exception => e
         puts "Error #{e} on user #{dc_username} <#{dc_email}>"
         puts "--"
@@ -345,9 +393,9 @@ def create_users
         abort
       end
       #TODO: add authentication info
-      puts "User (#{phpbb_user['user_id']}) #{phpbb_user['username']} (#{dc_username} / #{dc_email}) created".green
+      puts "User (#{osqa_user['id']}) #{osqa_user['username']} (#{dc_username} / #{dc_email}) created".green
     else
-      puts "User (#{phpbb_user['user_id']}) #{phpbb_user['username']} (#{dc_username} / #{dc_email}) found".green
+      puts "User (#{osqa_user['id']}) #{osqa_user['username']} (#{dc_username} / #{dc_email}) found".green
     end
   end
 end
@@ -388,7 +436,7 @@ def sanitize_text(text)
   text.gsub! /\[inlinespoiler\](.*)\[\/inlinespoiler\]/i, '[spoiler]\1[/spoiler]'
 
   # size tags
-  # discourse likes numbers from 4-40 (pt), phpbb uses 20 to 200 (percent)
+  # discourse likes numbers from 4-40 (pt), osqa uses 20 to 200 (percent)
   # [size=85:az5et819]dump dump[/size:az5et819]
   text.gsub! /\[size=(\d+)(%?)\]/ do |match|
     pt = $1.to_i / 100 * 14 # 14 is the default text size
@@ -398,10 +446,10 @@ def sanitize_text(text)
     "[size=#{pt}]"
   end
 
-  RubyBBCode.disable_validation
+  #RubyBBCode.disable_validation
   
   # -- Now use ruby-bbcode-to-md gem
-  text.bbcode_to_md!(false)
+  #text.bbcode_to_md!(false)
 
   # -- Post processing..
 
@@ -503,16 +551,16 @@ def dc_set_temporary_site_settings
   SiteSetting.send("flag_sockpuppets=", 0)
   SiteSetting.send("rate_limit_create_topic=", 0)
   SiteSetting.send("rate_limit_create_post=", 0)
-  SiteSetting.send("max_topics_per_day=", 10000)
-  SiteSetting.send("title_min_entropy=", 0)
-  SiteSetting.send("body_min_entropy=", 0)
+  SiteSetting.send("max_topics_per_day=", 100000)
+  SiteSetting.send("title_min_entropy=", 1)
+  SiteSetting.send("body_min_entropy=", 1)
   
   SiteSetting.send("min_post_length=", 1) # never set this to 0
-  SiteSetting.send("newuser_spam_host_threshold=", 1000)
+  SiteSetting.send("newuser_spam_host_threshold=", 10000)
   SiteSetting.send("min_topic_title_length=", 2)
   SiteSetting.send("max_topic_title_length=", 512)
-  SiteSetting.send("newuser_max_links=", 1000)
-  SiteSetting.send("newuser_max_images=", 1000)
+  SiteSetting.send("newuser_max_links=", 10000)
+  SiteSetting.send("newuser_max_images=", 10000)
   SiteSetting.send("max_word_length=", 5000)
   SiteSetting.send("email_time_window_mins=", 1)
   #SiteSetting.send("abc=", 0)
@@ -521,16 +569,16 @@ end
 # Check if user exists
 # For some really weird reason this method returns the opposite value
 # So if it did find the user, the result is false
-def dc_user_exists(name)
-  User.where('username = ?', name).exists?
+def dc_user_exists(email)
+  User.where('email = ?', email).exists?
 end
 
-def dc_get_user_id(name)
-  User.where('username = ?', name).first.id
+def dc_get_user_id(email)
+  User.where('email = ?', email).first.id
 end
 
-def dc_get_user(name)
-  User.where('username = ?', name).first
+def dc_get_user(email)
+  User.where('email = ?', email).first
 end
 
 # Returns current unix time
@@ -548,7 +596,7 @@ def exit_script
   abort
 end
 
-def phpbb_username_to_dc(name)
+def osqa_username_to_dc(name)
   # Create username from full name, only letters and numbers
   username = name.tr('^A-Za-z0-9', '').downcase
   # Maximum length of a Discourse username is 15 characters

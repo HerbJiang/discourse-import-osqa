@@ -4,12 +4,12 @@
 
 # database stuff
 sql_server: localhost
-sql_user: phpbb
-sql_database: phpbb
+sql_user: osqa
+sql_database: osqa
 sql_password: replaceme
 
 # User with admin privileges to create users and category
-discourse_admin: forumadmin
+discourse_admin_email: youradminemail@youradmin.emaildomain
 
 # If true then nothing will be written to the Discourse database
 test_mode: true
