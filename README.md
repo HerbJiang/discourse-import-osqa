@@ -29,7 +29,7 @@ Discourse.
 -   youtube and soundcloud tags are removed (because discourse does
     oneboxing for them)
 
--   bbcode tags are cleaned up
+-   bbcode tags are cleaned up (NOT used in OSQA importer)
 
 -   newlines are converted to markdown syntax
 
@@ -53,24 +53,23 @@ Start mailcatcher to see when all mails have been sent:
 `bash   gem install mailcatcher && mailcatcher --http-ip 0.0.0.0`
 
 -   Be sure to have at least one user in your discourse. If not, create
-    one and set his username in `config/import_phpbb.yml`.
+    one and set his username in `config/import_osqa.yml`.
 
 -   Gemfile: add entry
 
-`Gemfile   gem 'mysql2', require: false   gem 'ruby-bbcode-to-md', require: false`
+`Gemfile   gem 'mysql2', require: false`
 
 -   Install header files for mysql, ex. on Debian:
     `sudo apt-get install libmysqlclient-dev`
 
--   Install gems: `gem install mysql2` and
-    `gem install ruby-bbcode-to-md`
+-   Install gems: `gem install mysql2`
 
 -   Edit `config/import_phpbb.yml`: insert database connection and
     discourse\_admin username
 
--   Place `config/import_phpbb.yml` in your `discourse/config` folder
+-   Place `config/import_osqa.yml` in your `discourse/config` folder
 
--   Place `lib/tasks/import_phpbb.rake` in your `discourse/lib/tasks`
+-   Place `lib/tasks/import_osqa.rake` in your `discourse/lib/tasks`
     folder
 
 -   In case of multisite prepend next command with:
@@ -79,10 +78,9 @@ Start mailcatcher to see when all mails have been sent:
 -   Now you need to add two columns to your PHPbb table. In the mysql
     console, run:
 
-        ALTER TABLE phpbb_topics ADD COLUMN discourse_id INT NOT NULL DEFAULT '0';
-        ALTER TABLE phpbb_posts ADD COLUMN discourse_id INT NOT NULL DEFAULT '0';
+        ALTER TABLE forum_node ADD COLUMN discourse_id INT NOT NULL DEFAULT '0';
 
--   Finally, run `rake import:phpbb`
+-   Finally, run `rake import:osqa`
 
 -   If everything worked, reset your config and tell your people to
     reset their password on the new site.
@@ -96,4 +94,4 @@ Start mailcatcher to see when all mails have been sent:
 If you find this helpful or can't get it to work, feel free to pop me a
 message!
 
-  [this thread on Discourse Meta]: http://meta.discourse.org/t/importing-phpbb-into-discourse/7956
+  [this thread on Discourse Meta]: https://meta.discourse.org/t/import-tools-to-get-data-from-another-q2a-forum-platform/8787
